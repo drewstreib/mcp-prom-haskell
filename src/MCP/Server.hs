@@ -156,7 +156,7 @@ handleRequest client Request{..} =
               ]
           , "serverInfo" .= object
               [ "name" .= ("mcp-prometheus-server" :: Text)
-              , "version" .= ("0.1.0" :: Text)
+              , "version" .= ("1.0.0" :: Text)
               ]
           ]
       , responseError = Nothing

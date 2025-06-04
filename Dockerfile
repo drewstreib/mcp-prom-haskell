@@ -23,7 +23,7 @@ COPY test ./test
 
 # Build the application
 RUN cabal build exe:mcp-prometheus-server && \
-    cp $(cabal list-bins exe:mcp-prometheus-server) /build/mcp-prometheus-server
+    find . -name mcp-prometheus-server -type f -executable -exec cp {} /build/mcp-prometheus-server \;
 
 # Runtime stage
 FROM debian:bookworm-slim

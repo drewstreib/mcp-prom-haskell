@@ -7,6 +7,7 @@ module MCP.Server
   , ServerConfig(..)
   ) where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (catch, SomeException)
 import Data.Aeson hiding (Error)
 import Data.Aeson.Types (Parser, parseMaybe)
@@ -42,34 +43,24 @@ runServer config = do
   let client = newClient (configPrometheusUrl config)
   
   let loop = do
-        TIO.hPutStrLn stderr "Waiting for input..."
-        eof <- isEOF
-        if eof
-          then do
-            TIO.hPutStrLn stderr "EOF detected, exiting"
-            exitSuccess
-          else do
-            TIO.hPutStrLn stderr "Reading line..."
-            lineResult <- catch (Just <$> TIO.getLine) (\(_ :: SomeException) -> return Nothing)
-            case lineResult of
-              Nothing -> do
-                TIO.hPutStrLn stderr "Failed to read line, exiting"
-                exitSuccess
-              Just line -> do
-                TIO.hPutStrLn stderr $ "Received: " <> T.take 100 line <> "..."
-                let lineBytes = TLE.encodeUtf8 (TL.fromStrict line)
-                case eitherDecode' lineBytes of
-                  Left err -> do
-                    TIO.hPutStrLn stderr $ "Failed to parse request: " <> T.pack err
-                    loop
-                  Right req -> do
-                    TIO.hPutStrLn stderr $ "Parsed request method: " <> T.pack (show (requestMethod req))
-                    response <- handleRequest client req
-                    let responseJson = TLE.decodeUtf8 (encode response)
-                    TIO.hPutStrLn stderr $ "Sending response: " <> TL.toStrict (TL.take 100 responseJson) <> "..."
-                    TIO.putStrLn (TL.toStrict responseJson)
-                    hFlush stdout
-                    loop
+        -- Block waiting for input, but handle EOF/closure gracefully
+        inputResult <- catch (TIO.getLine >>= return . Just) handleEOF
+        case inputResult of
+          Nothing -> exitSuccess  -- stdin closed or EOF
+          Just line -> do
+            let lineBytes = TLE.encodeUtf8 (TL.fromStrict line)
+            case eitherDecode' lineBytes of
+              Left _err -> loop  -- Ignore parse errors, continue waiting
+              Right req -> do
+                response <- handleRequest client req
+                let responseJson = TLE.decodeUtf8 (encode response)
+                TIO.putStrLn (TL.toStrict responseJson)
+                hFlush stdout
+                loop
+      
+      handleEOF :: SomeException -> IO (Maybe Text)
+      handleEOF _ = return Nothing
+  
   loop
 
 handleRequest :: PrometheusClient -> Request -> IO Response
@@ -79,9 +70,11 @@ handleRequest client Request{..} =
       { responseJsonrpc = "2.0"
       , responseId = requestId
       , responseResult = Just $ object
-          [ "protocolVersion" .= ("1.0" :: Text)
+          [ "protocolVersion" .= ("2024-11-05" :: Text)
           , "capabilities" .= object
-              [ "tools" .= object []
+              [ "tools" .= object
+                  [ "listChanged" .= False
+                  ]
               ]
           , "serverInfo" .= object
               [ "name" .= ("mcp-prometheus-server" :: Text)

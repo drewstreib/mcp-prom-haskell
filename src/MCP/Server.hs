@@ -426,7 +426,12 @@ parseQueryArgs :: Value -> Parser (Text, Maybe Text)
 parseQueryArgs = withObject "QueryArgs" $ \v -> do
   queryStr <- v .: "query"
   mTime <- v .:? "time"
-  return (queryStr, mTime)
+  -- Basic validation to prevent obviously problematic inputs
+  if T.length queryStr > 50000  -- Very generous limit for PromQL queries
+    then fail "Query string is excessively long"
+    else if T.null (T.strip queryStr)
+      then fail "Query string cannot be empty"
+      else return (queryStr, mTime)
 
 parseRangeQueryArgs :: Value -> Parser (Text, Text, Text, Text)
 parseRangeQueryArgs = withObject "RangeQueryArgs" $ \v -> do
@@ -434,14 +439,22 @@ parseRangeQueryArgs = withObject "RangeQueryArgs" $ \v -> do
   start <- v .: "start"
   end <- v .: "end"
   step <- v .: "step"
-  return (queryStr, start, end, step)
+  -- Basic validation to prevent obviously problematic inputs
+  if T.length queryStr > 50000  -- Very generous limit for PromQL queries
+    then fail "Query string is excessively long"
+    else if T.null (T.strip queryStr)
+      then fail "Query string cannot be empty"
+      else return (queryStr, start, end, step)
 
 parseSeriesArgs :: Value -> Parser ([Text], Text, Text)
 parseSeriesArgs = withObject "SeriesArgs" $ \v -> do
   matchers <- v .: "match"
   start <- v .: "start"
   end <- v .: "end"
-  return (matchers, start, end)
+  -- Basic validation to prevent obviously problematic inputs
+  if length matchers > 1000  -- Very generous limit on matchers
+    then fail "Too many matchers"
+    else return (matchers, start, end)
 
 errorResponse :: Maybe Value -> Text -> Int -> Response
 errorResponse reqId msg code = Response

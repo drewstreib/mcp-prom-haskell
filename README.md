@@ -42,14 +42,6 @@ docker run -it --rm \
   mcp-prometheus-server:latest
 ```
 
-### Using Pre-built Image
-
-```bash
-docker run -it --rm \
-  -e PROMETHEUS_URL=http://your-prometheus:9090 \
-  mcp-prometheus-server:latest
-```
-
 ### Building the Docker Image
 
 ```bash

@@ -7,17 +7,19 @@ module MCP.Server
   , ServerConfig(..)
   ) where
 
-import Control.Concurrent (threadDelay)
-import Control.Exception (catch, SomeException)
+import Control.Exception (try, IOException)
+import System.IO.Error (isEOFError)
 import Data.Aeson hiding (Error)
 import Data.Aeson.Types (Parser, parseMaybe)
 import qualified Data.ByteString.Lazy as L
+import Network.HTTP.Simple (HttpException)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.Text.Lazy as TL
 import qualified Data.Text.Lazy.Encoding as TLE
-import Data.Time.Format (parseTimeM, defaultTimeLocale)
+import Data.Time.Clock (getCurrentTime)
+import Data.Time.Format (parseTimeM, defaultTimeLocale, formatTime)
 import System.Exit (exitSuccess)
 import System.IO
 
@@ -28,8 +30,33 @@ data ServerConfig = ServerConfig
   { configPrometheusUrl :: String
   }
 
+-- Structured logging with timestamps
+logInfo :: Text -> IO ()
+logInfo msg = do
+  timestamp <- getCurrentTime
+  let timeStr = formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" timestamp
+  TIO.hPutStrLn stderr $ "[" <> T.pack timeStr <> "] INFO: " <> msg
+
+logError :: Text -> IO ()
+logError msg = do
+  timestamp <- getCurrentTime
+  let timeStr = formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" timestamp
+  TIO.hPutStrLn stderr $ "[" <> T.pack timeStr <> "] ERROR: " <> msg
+
+logWarn :: Text -> IO ()
+logWarn msg = do
+  timestamp <- getCurrentTime
+  let timeStr = formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" timestamp
+  TIO.hPutStrLn stderr $ "[" <> T.pack timeStr <> "] WARN: " <> msg
+
+-- Helper to catch only HTTP-related exceptions
+tryHttpRequest :: IO a -> IO (Either HttpException a)
+tryHttpRequest = try
+
 runServer :: ServerConfig -> IO ()
 runServer config = do
+  logInfo "Starting MCP Prometheus server..."
+  
   -- Set UTF-8 encoding for all handles
   hSetEncoding stdin utf8
   hSetEncoding stdout utf8
@@ -40,28 +67,71 @@ runServer config = do
   hSetBuffering stdout NoBuffering
   hSetBuffering stderr LineBuffering  -- Keep line buffering for debug output
   
+  logInfo $ "Connecting to Prometheus at: " <> T.pack (configPrometheusUrl config)
   let client = newClient (configPrometheusUrl config)
   
-  let loop = do
-        -- Block waiting for input, but handle EOF/closure gracefully
-        inputResult <- catch (TIO.getLine >>= return . Just) handleEOF
+  logInfo "Server ready, waiting for MCP messages..."
+  
+  let loop requestCount = do
+        -- Block waiting for input, but handle all errors gracefully
+        inputResult <- try TIO.getLine
         case inputResult of
-          Nothing -> exitSuccess  -- stdin closed or EOF
-          Just line -> do
+          Left ex -> do
+            if isEOFError ex
+              then do
+                logInfo "Client disconnected (EOF)"
+                exitSuccess
+              else do
+                logError $ "IO error reading from stdin: " <> T.pack (show ex)
+                exitSuccess
+          
+          Right line -> do
+            logInfo $ "Received request #" <> T.pack (show requestCount) <> " (" <> T.pack (show (T.length line)) <> " chars)"
+            
+            -- Handle JSON parsing with detailed error reporting
             let lineBytes = TLE.encodeUtf8 (TL.fromStrict line)
             case eitherDecode' lineBytes of
-              Left _err -> loop  -- Ignore parse errors, continue waiting
+              Left parseErr -> do
+                logError $ "JSON parse error: " <> T.pack parseErr
+                logError $ "Raw input (first 200 chars): " <> T.take 200 line
+                -- Continue processing despite parse error
+                loop (requestCount + 1)
+              
               Right req -> do
-                response <- handleRequest client req
-                let responseJson = TLE.decodeUtf8 (encode response)
-                TIO.putStrLn (TL.toStrict responseJson)
-                hFlush stdout
-                loop
+                logInfo $ "Parsed " <> T.pack (show (requestMethod req)) <> " request with id: " <> 
+                          maybe "null" (T.take 20 . T.pack . show) (requestId req)
+                
+                -- Handle request processing with specific error recovery
+                responseResult <- try (handleRequest client req)
+                case responseResult of
+                  Left (ex :: IOException) -> do
+                    logError $ "IO error during request handling: " <> T.pack (show ex)
+                    let errorResponse = Response
+                          { responseJsonrpc = "2.0"
+                          , responseId = requestId req
+                          , responseResult = Nothing
+                          , responseError = Just $ MCP.Types.Error (-32603) "Internal server error" Nothing
+                          }
+                    sendResponse errorResponse
+                  
+                  Right response -> do
+                    logInfo $ "Sending response for request id: " <> 
+                              maybe "null" (T.take 20 . T.pack . show) (responseId response)
+                    sendResponse response
+                
+                loop (requestCount + 1)
       
-      handleEOF :: SomeException -> IO (Maybe Text)
-      handleEOF _ = return Nothing
+      sendResponse :: Response -> IO ()
+      sendResponse response = do
+        outputResult <- try $ do
+          let responseJson = TLE.decodeUtf8 (encode response)
+          TIO.putStrLn (TL.toStrict responseJson)
+          hFlush stdout
+        case outputResult of
+          Left (ex :: IOException) -> logError $ "Failed to send response: " <> T.pack (show ex)
+          Right _ -> return ()
   
-  loop
+  loop 1
 
 handleRequest :: PrometheusClient -> Request -> IO Response
 handleRequest client Request{..} =
@@ -190,28 +260,50 @@ handleToolCall client reqId ToolCall{..} =
   case toolCallName of
     "prometheus_query" -> 
       case parseMaybe parseQueryArgs toolCallArguments of
-        Nothing -> return $ errorResponse reqId "Invalid query arguments" (-32602)
+        Nothing -> do
+          logError $ "Invalid arguments for prometheus_query: " <> T.pack (show toolCallArguments)
+          return $ errorResponse reqId "Invalid query arguments" (-32602)
         Just (queryStr, mTimeStr) -> do
           let mTime = mTimeStr >>= parseTimeM True defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" . T.unpack
-          result <- query client queryStr mTime
+          logInfo $ "Executing Prometheus query: " <> T.take 100 queryStr
+          result <- tryHttpRequest $ query client queryStr mTime
           case result of
-            Left err -> return $ toolErrorResponse reqId err
-            Right qr -> return $ toolSuccessResponse reqId qr
+            Left ex -> do
+              logError $ "Prometheus query failed: " <> T.pack (show ex)
+              return $ toolErrorResponse reqId ("Prometheus query failed: " ++ show ex)
+            Right (Left err) -> do
+              logWarn $ "Prometheus query returned error: " <> T.pack err
+              return $ toolErrorResponse reqId err
+            Right (Right qr) -> do
+              logInfo "Prometheus query completed successfully"
+              return $ toolSuccessResponse reqId qr
     
     "prometheus_query_range" ->
       case parseMaybe parseRangeQueryArgs toolCallArguments of
-        Nothing -> return $ errorResponse reqId "Invalid range query arguments" (-32602)
+        Nothing -> do
+          logError $ "Invalid arguments for prometheus_query_range: " <> T.pack (show toolCallArguments)
+          return $ errorResponse reqId "Invalid range query arguments" (-32602)
         Just (queryStr, startStr, endStr, step) -> do
           let parseTime' s = parseTimeM True defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" (T.unpack s)
               mStart = parseTime' startStr
               mEnd = parseTime' endStr
           case (mStart, mEnd) of
             (Just start, Just end) -> do
-              result <- queryRange client queryStr start end step
+              logInfo $ "Executing Prometheus range query: " <> T.take 100 queryStr
+              result <- tryHttpRequest $ queryRange client queryStr start end step
               case result of
-                Left err -> return $ toolErrorResponse reqId err
-                Right qr -> return $ toolSuccessResponse reqId qr
-            _ -> return $ errorResponse reqId "Invalid time format" (-32602)
+                Left ex -> do
+                  logError $ "Prometheus range query failed: " <> T.pack (show ex)
+                  return $ toolErrorResponse reqId ("Prometheus range query failed: " ++ show ex)
+                Right (Left err) -> do
+                  logWarn $ "Prometheus range query returned error: " <> T.pack err
+                  return $ toolErrorResponse reqId err
+                Right (Right qr) -> do
+                  logInfo "Prometheus range query completed successfully"
+                  return $ toolSuccessResponse reqId qr
+            _ -> do
+              logError $ "Invalid time format - start: " <> startStr <> ", end: " <> endStr
+              return $ errorResponse reqId "Invalid time format" (-32602)
     
     "prometheus_series" ->
       case parseMaybe parseSeriesArgs toolCallArguments of

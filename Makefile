@@ -13,6 +13,9 @@ help:
 # Build the project
 build:
 	cabal build
+	cabal install --install-method=copy --installdir=./bin --overwrite-policy=always
+	mkdir -p testbin
+	cp bin/mcp-prometheus-server testbin/
 
 # Run tests
 test:

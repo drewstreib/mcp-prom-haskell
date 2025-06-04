@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "prometheus": {
+      "command": "/Users/dtype/src/mcp-prom-haskell/mcp-prometheus-server/dist-newstyle/build/aarch64-osx/ghc-9.12.2/mcp-prometheus-server-0.1.0.0/x/mcp-prometheus-server/build/mcp-prometheus-server/mcp-prometheus-server",
+      "args": [
+        "--prometheus-url",
+        "http://localhost:9090"
+      ]
+    }
+  }
+}

@@ -42,3 +42,7 @@ Thumbs.db
 .env
 .env.local
 test.env
+
+# Local binaries
+bin/
+testbin/

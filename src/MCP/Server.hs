@@ -1,22 +1,23 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module MCP.Server
   ( runServer
   , ServerConfig(..)
   ) where
 
-import Control.Monad (forever)
+import Control.Exception (catch, SomeException)
 import Data.Aeson hiding (Error)
 import Data.Aeson.Types (Parser, parseMaybe)
 import qualified Data.ByteString.Lazy as L
-import qualified Data.ByteString.Lazy.Char8 as L8
-import qualified Data.ByteString.Char8 as BS
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time.Clock (getCurrentTime)
+import qualified Data.Text.IO as TIO
+import qualified Data.Text.Lazy as TL
+import qualified Data.Text.Lazy.Encoding as TLE
 import Data.Time.Format (parseTimeM, defaultTimeLocale)
+import System.Exit (exitSuccess)
 import System.IO
 
 import MCP.Types
@@ -28,19 +29,48 @@ data ServerConfig = ServerConfig
 
 runServer :: ServerConfig -> IO ()
 runServer config = do
-  hSetBuffering stdin LineBuffering
-  hSetBuffering stdout LineBuffering
-  hSetBuffering stderr LineBuffering
+  -- Set UTF-8 encoding for all handles
+  hSetEncoding stdin utf8
+  hSetEncoding stdout utf8
+  hSetEncoding stderr utf8
+  
+  -- Use NoBuffering to ensure immediate message delivery
+  hSetBuffering stdin NoBuffering
+  hSetBuffering stdout NoBuffering
+  hSetBuffering stderr LineBuffering  -- Keep line buffering for debug output
   
   let client = newClient (configPrometheusUrl config)
   
-  forever $ do
-    line <- BS.getLine >>= return . L.fromStrict
-    case eitherDecode' line of
-      Left err -> hPutStrLn stderr $ "Failed to parse request: " ++ err
-      Right req -> do
-        response <- handleRequest client req
-        L8.putStrLn (encode response)
+  let loop = do
+        TIO.hPutStrLn stderr "Waiting for input..."
+        eof <- isEOF
+        if eof
+          then do
+            TIO.hPutStrLn stderr "EOF detected, exiting"
+            exitSuccess
+          else do
+            TIO.hPutStrLn stderr "Reading line..."
+            lineResult <- catch (Just <$> TIO.getLine) (\(_ :: SomeException) -> return Nothing)
+            case lineResult of
+              Nothing -> do
+                TIO.hPutStrLn stderr "Failed to read line, exiting"
+                exitSuccess
+              Just line -> do
+                TIO.hPutStrLn stderr $ "Received: " <> T.take 100 line <> "..."
+                let lineBytes = TLE.encodeUtf8 (TL.fromStrict line)
+                case eitherDecode' lineBytes of
+                  Left err -> do
+                    TIO.hPutStrLn stderr $ "Failed to parse request: " <> T.pack err
+                    loop
+                  Right req -> do
+                    TIO.hPutStrLn stderr $ "Parsed request method: " <> T.pack (show (requestMethod req))
+                    response <- handleRequest client req
+                    let responseJson = TLE.decodeUtf8 (encode response)
+                    TIO.hPutStrLn stderr $ "Sending response: " <> TL.toStrict (TL.take 100 responseJson) <> "..."
+                    TIO.putStrLn (TL.toStrict responseJson)
+                    hFlush stdout
+                    loop
+  loop
 
 handleRequest :: PrometheusClient -> Request -> IO Response
 handleRequest client Request{..} =
@@ -264,7 +294,7 @@ toolSuccessResponse reqId QueryResult{..} = Response
   { responseJsonrpc = "2.0"
   , responseId = reqId
   , responseResult = Just $ object
-      [ "content" .= [object ["type" .= ("text" :: Text), "text" .= L8.unpack (encode resultData)]]
+      [ "content" .= [object ["type" .= ("text" :: Text), "text" .= TL.unpack (TLE.decodeUtf8 (encode resultData))]]
       , "isError" .= False
       ]
   , responseError = Nothing

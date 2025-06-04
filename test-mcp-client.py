@@ -29,7 +29,7 @@ def test_mcp_server():
     
     # Start the server
     proc = subprocess.Popen(
-        [server_path, "--prometheus-url", "http://localhost:9090"],
+        [server_path, "--prometheus-url", "http://prometheus:9090"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

@@ -13,7 +13,7 @@ def test_malformed_json():
     
     server_path = "./testbin/mcp-prometheus-server"
     proc = subprocess.Popen(
-        [server_path, "--prometheus-url", "http://localhost:9090"],
+        [server_path, "--prometheus-url", "http://prometheus:9090"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

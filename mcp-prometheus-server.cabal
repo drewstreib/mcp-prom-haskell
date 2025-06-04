@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               mcp-prometheus-server
-version:            1.0.0
+version:            1.0.1
 synopsis:           MCP server for Prometheus queries
 description:        A Model Context Protocol server that provides Prometheus query capabilities
 license:            BSD-3-Clause

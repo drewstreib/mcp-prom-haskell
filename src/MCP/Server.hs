@@ -12,7 +12,6 @@ import Control.Exception (try, IOException)
 import System.IO.Error (isEOFError)
 import Data.Aeson hiding (Error)
 import Data.Aeson.Types (Parser, parseMaybe)
-import qualified Data.ByteString.Lazy as L
 import Network.HTTP.Simple (HttpException)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -114,13 +113,13 @@ runServer config = do
                     case responseResult of
                       Left (ex :: IOException) -> do
                         logError $ "IO error during request handling: " <> T.pack (show ex)
-                        let errorResponse = Response
+                        let errorResp = Response
                               { responseJsonrpc = "2.0"
                               , responseId = requestId req
                               , responseResult = Nothing
                               , responseError = Just $ MCP.Types.Error (-32603) "Internal server error" Nothing
                               }
-                        sendResponse errorResponse
+                        sendResponse errorResp
                       
                       Right response -> do
                         logInfo $ "Sending response for request id: " <> 
@@ -139,7 +138,7 @@ runServer config = do
           Left (ex :: IOException) -> logError $ "Failed to send response: " <> T.pack (show ex)
           Right _ -> return ()
   
-  loop 1
+  loop (1 :: Int)
 
 handleRequest :: PrometheusClient -> Request -> IO Response
 handleRequest client Request{..} =
@@ -156,7 +155,7 @@ handleRequest client Request{..} =
               ]
           , "serverInfo" .= object
               [ "name" .= ("mcp-prometheus-server" :: Text)
-              , "version" .= ("1.0.0" :: Text)
+              , "version" .= ("1.0.1" :: Text)
               ]
           ]
       , responseError = Nothing

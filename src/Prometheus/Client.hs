@@ -13,9 +13,8 @@ module Prometheus.Client
   , newClient
   ) where
 
-import Control.Exception (try, SomeException)
+import Control.Exception (try)
 import Data.Aeson
-import Data.ByteString.Lazy as L
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -54,7 +53,7 @@ query PrometheusClient{..} queryStr mTime = do
   
   result <- try $ httpLBS req
   case result of
-    Left (e :: SomeException) -> return $ Left $ show e
+    Left (e :: HttpException) -> return $ Left $ show e
     Right response ->
       if statusIsSuccessful (getResponseStatus response)
         then case eitherDecode' (getResponseBody response) of
@@ -77,7 +76,7 @@ queryRange PrometheusClient{..} queryStr start end step = do
   
   result <- try $ httpLBS req
   case result of
-    Left (e :: SomeException) -> return $ Left $ show e
+    Left (e :: HttpException) -> return $ Left $ show e
     Right response ->
       if statusIsSuccessful (getResponseStatus response)
         then case eitherDecode' (getResponseBody response) of
@@ -98,7 +97,7 @@ series PrometheusClient{..} matchers start end = do
   
   result <- try $ httpLBS req
   case result of
-    Left (e :: SomeException) -> return $ Left $ show e
+    Left (e :: HttpException) -> return $ Left $ show e
     Right response ->
       if statusIsSuccessful (getResponseStatus response)
         then case eitherDecode' (getResponseBody response) of
@@ -112,7 +111,7 @@ labelValues PrometheusClient{..} labelName = do
   
   result <- try $ httpLBS request
   case result of
-    Left (e :: SomeException) -> return $ Left $ show e
+    Left (e :: HttpException) -> return $ Left $ show e
     Right response ->
       if statusIsSuccessful (getResponseStatus response)
         then case eitherDecode' (getResponseBody response) of
@@ -126,7 +125,7 @@ labels PrometheusClient{..} = do
   
   result <- try $ httpLBS request
   case result of
-    Left (e :: SomeException) -> return $ Left $ show e
+    Left (e :: HttpException) -> return $ Left $ show e
     Right response ->
       if statusIsSuccessful (getResponseStatus response)
         then case eitherDecode' (getResponseBody response) of

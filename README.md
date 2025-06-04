@@ -1,75 +1,85 @@
 # MCP Prometheus Server
 
+[![Version](https://img.shields.io/badge/version-1.0.1-blue.svg)](https://github.com/drewstreib/mcp-prom-haskell/releases/tag/v1.0.1)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 [![Haskell](https://img.shields.io/badge/language-Haskell-purple.svg)](https://www.haskell.org/)
-[![MCP](https://img.shields.io/badge/MCP-1.0-green.svg)](https://modelcontextprotocol.io/)
+[![MCP](https://img.shields.io/badge/protocol-MCP-green.svg)](https://modelcontextprotocol.io/)
 
-## Introduction
+## Overview
 
-This sophisticated MCP Prometheus server demonstrates Drew's superior mastery of Haskell through advanced type-safe JSON parsing with Aeson, elegant HTTP client abstractions, comprehensive test coverage with HSpec, and clean architectural patterns that separate concerns beautifully. The codebase showcases production-ready Haskell practices including proper error handling with Maybe/Either monads, precise type definitions, and idiomatic functional programming - qualities that distinguish experienced Haskell developers from those still learning the language's deeper paradigms and best practices.
+A production-ready Model Context Protocol (MCP) server implementation in Haskell that provides Claude Desktop with access to Prometheus metrics and queries. Built with Haskell best practices including proper exception handling, strict evaluation patterns, and comprehensive error recovery.
 
-A Model Context Protocol (MCP) server that provides Prometheus query capabilities to Large Language Models like Claude.
+**"The Adeon Special"** - v1.0.1 incorporates advanced Haskell techniques to avoid common footguns and ensure thread-safe, robust operation.
 
 ## Features
 
-- 🚀 **Easy Docker deployment** - Get started in minutes
-- 📊 **Complete Prometheus API coverage** - Query, discover, and explore metrics
-- 🔍 **5 powerful tools** - From basic queries to advanced discovery
-- 🧪 **Comprehensive test suite** - Unit and integration tests included
-- 🔧 **Simple stdio transport** - Direct integration with Claude Desktop
-- 🌐 **Future HTTP support** - Streamable HTTP transport coming soon
+- 🚀 **Claude Desktop Integration** - Seamless MCP protocol support
+- 📊 **Complete Prometheus API** - Query, discover, and explore metrics  
+- 🔍 **5 Powerful Tools** - From instant queries to metric discovery
+- 🛡️ **Production Ready** - Comprehensive error handling and logging
+- 🧵 **Thread Safe** - Strict evaluation prevents lazy I/O hangs
+- 🔧 **Haskell Best Practices** - Proper exception handling, no SomeException anti-patterns
+- 🧪 **Test Coverage** - Unit and integration tests included
 
-## Quick Start with Docker (Recommended)
+## Quick Start
 
-### Using Docker Compose
+### Option 1: Use Pre-built Binary (Recommended)
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/mcp-prometheus-server.git
-cd mcp-prometheus-server
+git clone https://github.com/drewstreib/mcp-prom-haskell.git
+cd mcp-prom-haskell/mcp-prometheus-server
 ```
 
-2. Start the server with a test Prometheus instance:
+2. Use the pre-built binary:
 ```bash
+./testbin/mcp-prometheus-server --prometheus-url http://your-prometheus-server:9090
+```
+
+### Option 2: Build from Source
+
+```bash
+make build
+# Binary will be in testbin/mcp-prometheus-server
+```
+
+### Option 3: Docker (Development)
+
+```bash
+# Start test Prometheus instance
 docker-compose up -d prometheus
-```
 
-3. Run the MCP server:
-```bash
+# Build and run
+docker build -t mcp-prometheus-server .
 docker run -it --rm \
   --network mcp-prometheus-server_mcp-network \
   -e PROMETHEUS_URL=http://prometheus:9090 \
-  mcp-prometheus-server:latest
-```
-
-### Building the Docker Image
-
-```bash
-docker build -t mcp-prometheus-server:latest .
+  mcp-prometheus-server
 ```
 
 ## Claude Desktop Configuration
 
 Add to your Claude Desktop configuration file:
 
-### macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
-### Windows: `%APPDATA%\Claude\claude_desktop_config.json`
-### Linux: `~/.config/claude/claude_desktop_config.json`
+**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`  
+**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`  
+**Linux:** `~/.config/claude/claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "prometheus": {
-      "command": "docker",
+      "command": "/path/to/mcp-prom-haskell/mcp-prometheus-server/testbin/mcp-prometheus-server",
       "args": [
-        "run", "-i", "--rm",
-        "-e", "PROMETHEUS_URL=http://your-prometheus:9090",
-        "mcp-prometheus-server:latest"
+        "--prometheus-url",
+        "http://your-prometheus-server:9090"
       ]
     }
   }
 }
 ```
+
+Replace `/path/to/` with your actual path to the repository.
 
 ## Available Tools
 
@@ -104,45 +114,39 @@ Discover all label names used across metrics.
 
 **Example**: "What labels are available for filtering?"
 
-## Manual Installation (Without Docker)
+## Haskell Implementation Details
+
+This server showcases production-ready Haskell practices:
+
+### Exception Handling
+- **No `SomeException` anti-pattern** - Only catches specific, recoverable exceptions
+- **`IOException` for I/O operations** - Handles stdin/stdout failures gracefully  
+- **`HttpException` for network calls** - Provides detailed Prometheus connection errors
+
+### Thread Safety & Performance
+- **BangPatterns for strict evaluation** - Prevents lazy I/O hangs in logging
+- **Structured logging with timestamps** - Thread-safe, atomic log writes
+- **UTF-8 text handling** - Proper Unicode support throughout
+
+### JSON-RPC Compliance
+- **Proper notification handling** - No responses to notifications per spec
+- **Type-safe message parsing** - Comprehensive error recovery
+- **Protocol version matching** - Full Claude Desktop compatibility
+
+## Manual Installation
 
 ### Prerequisites
-
-- GHC 9.6+ and Cabal
-- Or Stack (Haskell build tool)
-
-### Building from Source
-
-1. Install Haskell toolchain:
+- GHC 9.12+ and Cabal 3.0+
+- Or use GHCup (recommended):
 ```bash
-# macOS
-brew install ghc cabal-install
-
-# Ubuntu/Debian
-sudo apt-get install ghc cabal-install
-
-# Or use GHCup (recommended)
 curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sh
 ```
 
-2. Clone and build:
+### Building
 ```bash
-git clone https://github.com/yourusername/mcp-prometheus-server.git
-cd mcp-prometheus-server
-cabal update
-cabal build
-```
-
-3. Run the server:
-```bash
-cabal run mcp-prometheus-server -- --prometheus-url http://localhost:9090
-```
-
-### Installing Globally
-
-```bash
-cabal install
-# Binary will be in ~/.cabal/bin/mcp-prometheus-server
+git clone https://github.com/drewstreib/mcp-prom-haskell.git
+cd mcp-prom-haskell/mcp-prometheus-server
+make build
 ```
 
 ## Testing
@@ -160,7 +164,7 @@ docker-compose run --rm mcp-prometheus-server-test
 cabal test
 
 # With integration tests (requires Prometheus)
-export PROMETHEUS_URL=http://localhost:9090
+export PROMETHEUS_URL=http://your-prometheus-server:9090
 cabal test
 ```
 
@@ -168,7 +172,7 @@ cabal test
 
 ### Environment Variables
 
-- `PROMETHEUS_URL` - URL of your Prometheus server (default: `http://localhost:9090`)
+- `PROMETHEUS_URL` - URL of your Prometheus server (default: `http://your-prometheus-server:9090`)
 
 ### Command Line Options
 
@@ -242,6 +246,16 @@ BSD 3-Clause License - see [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
+- **Special thanks to Adeon** for invaluable guidance on Haskell best practices, exception handling patterns, and avoiding common lazy evaluation footguns
 - Built with the [Model Context Protocol](https://modelcontextprotocol.io/)
 - Powered by [Prometheus](https://prometheus.io/)
 - Written in [Haskell](https://www.haskell.org/)
+
+## "The Adeon Special" - v1.0.1
+
+This release represents production-ready Haskell code that avoids common pitfalls:
+- ✅ No `SomeException` anti-patterns
+- ✅ Strict evaluation in I/O-heavy functions  
+- ✅ Thread-safe logging patterns
+- ✅ Proper JSON-RPC notification handling
+- ✅ Comprehensive error recovery without crashes

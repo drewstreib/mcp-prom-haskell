@@ -1,0 +1,56 @@
+cabal-version:      3.0
+name:               mcp-prometheus-server
+version:            0.1.0.0
+synopsis:           MCP server for Prometheus queries
+description:        A Model Context Protocol server that provides Prometheus query capabilities
+license:            BSD-3-Clause
+author:             Your Name
+maintainer:         your.email@example.com
+category:           Network
+build-type:         Simple
+
+library
+    exposed-modules:  MCP.Types
+                    , MCP.Server
+                    , Prometheus.Client
+    build-depends:    base >= 4.17 && < 5
+                    , aeson >= 2.0 && < 2.3
+                    , bytestring >= 0.11 && < 0.13
+                    , text >= 2.0 && < 2.2
+                    , http-conduit >= 2.3 && < 2.4
+                    , http-client >= 0.7 && < 0.8
+                    , http-types >= 0.12 && < 0.13
+                    , time >= 1.11 && < 1.13
+                    , containers >= 0.6 && < 0.7
+                    , unordered-containers >= 0.2 && < 0.3
+                    , vector >= 0.13 && < 0.14
+    hs-source-dirs:   src
+    default-language: Haskell2010
+    ghc-options:      -Wall -Wcompat -Widentities -Wincomplete-record-updates
+                      -Wincomplete-uni-patterns -Wmissing-export-lists
+                      -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+
+executable mcp-prometheus-server
+    main-is:          Main.hs
+    build-depends:    base >= 4.17 && < 5
+                    , mcp-prometheus-server
+                    , optparse-applicative >= 0.17 && < 0.19
+    hs-source-dirs:   app
+    default-language: Haskell2010
+    ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+test-suite mcp-prometheus-server-test
+    default-language: Haskell2010
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Spec.hs
+    other-modules:    MCP.TypesSpec
+                    , Prometheus.ClientSpec
+                    , IntegrationSpec
+    build-depends:    base >= 4.17 && < 5
+                    , mcp-prometheus-server
+                    , hspec >= 2.10 && < 2.12
+                    , aeson
+                    , text
+                    , time
+    ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N

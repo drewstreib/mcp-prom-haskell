@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # Example Prometheus instance (optional - remove if you have your own)
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus_data:/prometheus
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - mcp-network
+
+  # MCP Prometheus Server
+  mcp-prometheus-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mcp-prometheus-server:latest
+    environment:
+      # Point to your Prometheus instance
+      PROMETHEUS_URL: http://prometheus:9090
+    depends_on:
+      - prometheus
+    networks:
+      - mcp-network
+    # For stdio mode, you would typically use this with docker run -it
+    # For production use with Claude Desktop, see README.md
+    stdin_open: true
+    tty: true
+
+  # Test runner service
+  mcp-prometheus-server-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    command: ["cabal", "test"]
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+    depends_on:
+      - prometheus
+    networks:
+      - mcp-network
+    working_dir: /build
+
+  # Example of using the MCP server with a custom Prometheus URL
+  # mcp-prometheus-server-custom:
+  #   image: mcp-prometheus-server:latest
+  #   environment:
+  #     PROMETHEUS_URL: http://your-prometheus-host:9090
+  #   stdin_open: true
+  #   tty: true
+
+volumes:
+  prometheus_data:
+
+networks:
+  mcp-network:
+    driver: bridge

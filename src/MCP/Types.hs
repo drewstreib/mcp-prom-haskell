@@ -37,6 +37,7 @@ data Method
   = Initialize
   | ListTools
   | CallTool
+  | Notification
   | Unknown Text
   deriving (Show, Eq)
 
@@ -73,6 +74,7 @@ parseMethod :: Text -> Method
 parseMethod "initialize" = Initialize
 parseMethod "tools/list" = ListTools
 parseMethod "tools/call" = CallTool
+parseMethod "notifications/initialized" = Notification
 parseMethod other = Unknown other
 
 instance ToJSON Response where

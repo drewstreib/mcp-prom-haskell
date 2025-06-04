@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE BangPatterns #-}
 
 module MCP.Server
   ( runServer
@@ -31,20 +32,21 @@ data ServerConfig = ServerConfig
   }
 
 -- Structured logging with timestamps
+-- Use bang patterns to force strict evaluation and avoid lazy I/O issues
 logInfo :: Text -> IO ()
-logInfo msg = do
+logInfo !msg = do
   timestamp <- getCurrentTime
   let timeStr = formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" timestamp
   TIO.hPutStrLn stderr $ "[" <> T.pack timeStr <> "] INFO: " <> msg
 
 logError :: Text -> IO ()
-logError msg = do
+logError !msg = do
   timestamp <- getCurrentTime
   let timeStr = formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" timestamp
   TIO.hPutStrLn stderr $ "[" <> T.pack timeStr <> "] ERROR: " <> msg
 
 logWarn :: Text -> IO ()
-logWarn msg = do
+logWarn !msg = do
   timestamp <- getCurrentTime
   let timeStr = formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" timestamp
   TIO.hPutStrLn stderr $ "[" <> T.pack timeStr <> "] WARN: " <> msg
@@ -101,25 +103,31 @@ runServer config = do
                 logInfo $ "Parsed " <> T.pack (show (requestMethod req)) <> " request with id: " <> 
                           maybe "null" (T.take 20 . T.pack . show) (requestId req)
                 
-                -- Handle request processing with specific error recovery
-                responseResult <- try (handleRequest client req)
-                case responseResult of
-                  Left (ex :: IOException) -> do
-                    logError $ "IO error during request handling: " <> T.pack (show ex)
-                    let errorResponse = Response
-                          { responseJsonrpc = "2.0"
-                          , responseId = requestId req
-                          , responseResult = Nothing
-                          , responseError = Just $ MCP.Types.Error (-32603) "Internal server error" Nothing
-                          }
-                    sendResponse errorResponse
-                  
-                  Right response -> do
-                    logInfo $ "Sending response for request id: " <> 
-                              maybe "null" (T.take 20 . T.pack . show) (responseId response)
-                    sendResponse response
-                
-                loop (requestCount + 1)
+                -- Check if this is a notification (no response expected)
+                if requestMethod req == Notification
+                  then do
+                    logInfo "Received notification, no response required"
+                    loop (requestCount + 1)
+                  else do
+                    -- Handle request processing with specific error recovery
+                    responseResult <- try (handleRequest client req)
+                    case responseResult of
+                      Left (ex :: IOException) -> do
+                        logError $ "IO error during request handling: " <> T.pack (show ex)
+                        let errorResponse = Response
+                              { responseJsonrpc = "2.0"
+                              , responseId = requestId req
+                              , responseResult = Nothing
+                              , responseError = Just $ MCP.Types.Error (-32603) "Internal server error" Nothing
+                              }
+                        sendResponse errorResponse
+                      
+                      Right response -> do
+                        logInfo $ "Sending response for request id: " <> 
+                                  maybe "null" (T.take 20 . T.pack . show) (responseId response)
+                        sendResponse response
+                    
+                    loop (requestCount + 1)
       
       sendResponse :: Response -> IO ()
       sendResponse response = do
@@ -252,6 +260,8 @@ handleRequest client Request{..} =
       Just params -> case parseMaybe parseJSON params of
         Nothing -> return $ errorResponse requestId "Invalid params" (-32602)
         Just toolCall -> handleToolCall client requestId toolCall
+    
+    Notification -> return $ errorResponse requestId "Notifications should not reach handleRequest" (-32603)
     
     Unknown method -> return $ errorResponse requestId ("Unknown method: " <> method) (-32601)
 

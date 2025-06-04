@@ -8,7 +8,7 @@ module MCP.Server
   , ServerConfig(..)
   ) where
 
-import Control.Exception (try, IOException)
+import Control.Exception (try, IOException, catch, SomeException)
 import Control.Monad.Reader (ReaderT, runReaderT)
 import Control.Monad.State (StateT, runStateT, get, modify)
 import Control.Monad.IO.Class (liftIO)
@@ -21,6 +21,9 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.Text.Lazy as TL
 import qualified Data.Text.Lazy.Encoding as TLE
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Encoding.Error as TEE
+import qualified Data.ByteString.Char8 as BS
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (parseTimeM, defaultTimeLocale, formatTime)
 import System.Exit (exitSuccess)
@@ -44,6 +47,7 @@ data ServerError
   | IOError IOException
   | RequestHandlingError IOException  
   | PrometheusError Text
+  | InputError Text  -- For robustness-related input errors
   deriving (Show)
 
 -- Structured logging with timestamps
@@ -73,6 +77,49 @@ type ServerM = ReaderT ServerConfig (StateT ServerState IO)
 tryHttpRequest :: IO a -> IO (Either HttpException a)
 tryHttpRequest = try
 
+-- Constants for input protection
+maxInputLength :: Int
+maxInputLength = 1024 * 1024  -- 1MB limit
+
+maxLogLength :: Int
+maxLogLength = 1000  -- Truncate logs to 1000 chars
+
+-- Safe input reading with robust UTF-8 handling and size limits
+safeReadInput :: IO (Either String Text)
+safeReadInput = do
+  result <- try $ do
+    -- Read raw bytes first to handle encoding issues
+    rawBytes <- BS.hGetLine stdin
+    
+    -- Check input size limit
+    if BS.length rawBytes > maxInputLength
+      then return $ Left "Input too large (> 1MB)"
+      else do
+        -- Decode with lenient UTF-8 handling (replace invalid sequences)
+        let decoded = TE.decodeUtf8With TEE.lenientDecode rawBytes
+        -- Additional validation for decoded text
+        if T.any (\c -> c < '\x20' && c /= '\n' && c /= '\t' && c /= '\r') decoded
+          then return $ Left "Input contains invalid control characters"
+          else return $ Right decoded
+  
+  case result of
+    Left ex -> 
+      if isEOFError ex
+        then return $ Left "EOF"
+        else return $ Left $ "IO error: " ++ show ex
+    Right eitherText -> return eitherText
+
+-- Safe text truncation for logging
+safeTruncateForLog :: Text -> Text
+safeTruncateForLog txt = 
+  let truncated = T.take maxLogLength txt
+      suffix = if T.length txt > maxLogLength then "..." else ""
+  in truncated <> suffix
+
+-- Sanitize text for safe logging (remove control characters except newlines/tabs)
+sanitizeForLog :: Text -> Text
+sanitizeForLog = T.filter (\c -> c >= ' ' || c == '\n' || c == '\t')
+
 -- Run a ServerM computation
 runServerM :: ServerConfig -> ServerState -> ServerM a -> IO (a, ServerState)
 runServerM config state action = runStateT (runReaderT action config) state
@@ -82,8 +129,13 @@ handleServerError :: Maybe Value -> ServerError -> ServerM (Maybe Response)
 handleServerError reqId err = case err of
   ParseError parseErr rawInput -> do
     liftIO $ logError $ "JSON parse error: " <> parseErr
-    liftIO $ logError $ "Raw input (first 200 chars): " <> T.take 200 rawInput
+    liftIO $ logError $ "Raw input (sanitized, first 200 chars): " <> 
+            safeTruncateForLog (sanitizeForLog (T.take 200 rawInput))
     return Nothing  -- No response for parse errors
+    
+  InputError errMsg -> do
+    liftIO $ logError $ "Input error: " <> errMsg
+    return Nothing  -- No response for input errors
     
   IOError ex -> do
     liftIO $ logError $ "IO error: " <> T.pack (show ex)
@@ -112,16 +164,28 @@ handleServerError reqId err = case err of
       , responseError = Just $ MCP.Types.Error (-32603) ("Prometheus error: " <> msg) Nothing
       }
 
--- Send a response and handle I/O errors
+-- Send a response and handle I/O errors with size protection
 sendResponse :: Response -> ServerM ()
 sendResponse response = do
   outputResult <- liftIO $ try $ do
     let responseJson = TLE.decodeUtf8 (encode response)
-    TIO.putStrLn (TL.toStrict responseJson)
+        responseText = TL.toStrict responseJson
+    -- Validate output isn't too large
+    if T.length responseText > maxInputLength
+      then do
+        logWarn "Response too large, truncating"
+        let truncated = T.take (maxInputLength - 100) responseText <> "...truncated}"
+        TIO.putStrLn truncated
+      else TIO.putStrLn responseText
     hFlush stdout
+  
   case outputResult of
     Left (ex :: IOException) -> liftIO $ logError $ "Failed to send response: " <> T.pack (show ex)
     Right _ -> return ()
+  
+  -- Additional error handling for any other exceptions during output
+  `catch` \(ex :: SomeException) -> 
+    liftIO $ logError $ "Unexpected error sending response: " <> T.pack (show ex)
 
 -- Process a single request and send response
 processRequest :: Text -> ServerM ()
@@ -144,8 +208,8 @@ processRequest line = do
     Right maybeResponse -> do
       case maybeResponse of
         Just response -> do
-          liftIO $ logInfo $ "Sending response for request id: " <> 
-                    maybe "null" (T.take 20 . T.pack . show) (responseId response)
+          let respIdStr = maybe "null" (safeTruncateForLog . T.pack . show) (responseId response)
+          liftIO $ logInfo $ "Sending response for request id: " <> respIdStr
           sendResponse response
         Nothing -> 
           liftIO $ logInfo "Received notification, no response required"
@@ -156,40 +220,64 @@ processRequest line = do
 -- Safely process a request, returning either an error or optional response
 processRequestSafe :: PrometheusClient -> Text -> ServerM (Either ServerError (Maybe Response))
 processRequestSafe client line = do
-  -- Parse JSON
-  let lineBytes = TLE.encodeUtf8 (TL.fromStrict line)
-  case eitherDecode' lineBytes of
-    Left parseErr -> 
-      return $ Left $ ParseError (T.pack parseErr) line
-    
-    Right req -> do
-      liftIO $ logInfo $ "Parsed " <> T.pack (show (requestMethod req)) <> " request with id: " <> 
-                maybe "null" (T.take 20 . T.pack . show) (requestId req)
+  -- Validate input isn't just whitespace or empty
+  let trimmedLine = T.strip line
+  if T.null trimmedLine
+    then do
+      liftIO $ logWarn "Received empty/whitespace-only input, ignoring"
+      return $ Left $ InputError "Empty or whitespace-only input"
+    else do
+      -- Handle JSON parsing with comprehensive error handling
+      parseResult <- liftIO $ try $ do
+        let lineBytes = TLE.encodeUtf8 (TL.fromStrict trimmedLine)
+        case eitherDecode' lineBytes of
+          Left parseErr -> return $ Left parseErr
+          Right req -> return $ Right req
       
-      -- Check if this is a notification (no response expected)
-      if requestMethod req == Notification
-        then return $ Right Nothing
-        else do
-          -- Handle request processing with error recovery
-          responseResult <- liftIO $ try (handleRequest client req)
-          case responseResult of
-            Left ex -> return $ Left $ RequestHandlingError ex
-            Right response -> return $ Right $ Just response
+      case parseResult of
+        Left (ex :: SomeException) -> do
+          liftIO $ logError $ "Exception during JSON parsing: " <> T.pack (show ex)
+          return $ Left $ ParseError "Exception during parsing" trimmedLine
+        
+        Right (Left parseErr) -> 
+          return $ Left $ ParseError (T.pack parseErr) trimmedLine
+        
+        Right (Right req) -> do
+          let reqMethodStr = T.take 50 $ T.pack $ show $ requestMethod req
+              reqIdStr = maybe "null" (safeTruncateForLog . T.pack . show) (requestId req)
+          liftIO $ logInfo $ "Parsed " <> reqMethodStr <> " request with id: " <> reqIdStr
+          
+          -- Check if this is a notification (no response expected)
+          if requestMethod req == Notification
+            then return $ Right Nothing
+            else do
+              -- Handle request processing with comprehensive error recovery
+              responseResult <- liftIO $ (try (handleRequest client req) `catch` \(ex :: SomeException) -> do
+                logError $ "Unexpected exception during request handling: " <> T.pack (show ex)
+                return $ Right $ Response
+                  { responseJsonrpc = "2.0"
+                  , responseId = requestId req
+                  , responseResult = Nothing
+                  , responseError = Just $ MCP.Types.Error (-32603) "Internal server error" Nothing
+                  }) :: IO (Either IOException Response)
+              
+              case responseResult of
+                Left ex -> return $ Left $ RequestHandlingError ex
+                Right response -> return $ Right $ Just response
 
--- Main connection loop - reads from stdin and processes requests
+-- Main connection loop - reads from stdin and processes requests with robustness
 connectionLoop :: ServerM ()
 connectionLoop = do
-  -- Block waiting for input, but handle all errors gracefully
-  inputResult <- liftIO $ try TIO.getLine
+  -- Use safe input reading with comprehensive error handling
+  inputResult <- liftIO safeReadInput
   case inputResult of
-    Left ex -> do
-      if isEOFError ex
-        then do
-          liftIO $ logInfo "Client disconnected (EOF)"
-          liftIO exitSuccess
-        else do
-          liftIO $ logError $ "IO error reading from stdin: " <> T.pack (show ex)
-          liftIO exitSuccess
+    Left "EOF" -> do
+      liftIO $ logInfo "Client disconnected (EOF)"
+      liftIO exitSuccess
+    Left errMsg -> do
+      -- Handle input error and continue (don't exit for robustness)
+      _ <- handleServerError Nothing (InputError (T.pack errMsg))
+      connectionLoop  -- Continue processing
     
     Right line -> do
       processRequest line
@@ -422,11 +510,24 @@ handleToolCall client reqId ToolCall{..} =
     
     _ -> return $ errorResponse reqId ("Unknown tool: " <> toolCallName) (-32602)
 
+-- Safe parameter parsing with input validation
 parseQueryArgs :: Value -> Parser (Text, Maybe Text)
 parseQueryArgs = withObject "QueryArgs" $ \v -> do
   queryStr <- v .: "query"
-  mTime <- v .:? "time"
-  return (queryStr, mTime)
+  -- Validate query string length and content
+  if T.length queryStr > 10000  -- Reasonable PromQL query limit
+    then fail "Query string too long (>10KB)"
+    else if T.null (T.strip queryStr)
+      then fail "Query string cannot be empty"
+      else do
+        mTime <- v .:? "time"
+        -- Validate time string if present
+        case mTime of
+          Just timeStr -> 
+            if T.length timeStr > 100  -- Reasonable timestamp limit
+              then fail "Time string too long"
+              else return (queryStr, mTime)
+          Nothing -> return (queryStr, mTime)
 
 parseRangeQueryArgs :: Value -> Parser (Text, Text, Text, Text)
 parseRangeQueryArgs = withObject "RangeQueryArgs" $ \v -> do
@@ -434,14 +535,36 @@ parseRangeQueryArgs = withObject "RangeQueryArgs" $ \v -> do
   start <- v .: "start"
   end <- v .: "end"
   step <- v .: "step"
-  return (queryStr, start, end, step)
+  
+  -- Validate all inputs
+  if T.length queryStr > 10000
+    then fail "Query string too long (>10KB)"
+    else if T.null (T.strip queryStr)
+      then fail "Query string cannot be empty"
+      else if T.length start > 100 || T.length end > 100
+        then fail "Timestamp strings too long"
+        else if T.length step > 20
+          then fail "Step string too long"
+          else if T.null (T.strip start) || T.null (T.strip end) || T.null (T.strip step)
+            then fail "Timestamp and step parameters cannot be empty"
+            else return (queryStr, start, end, step)
 
 parseSeriesArgs :: Value -> Parser ([Text], Text, Text)
 parseSeriesArgs = withObject "SeriesArgs" $ \v -> do
   matchers <- v .: "match"
   start <- v .: "start"
   end <- v .: "end"
-  return (matchers, start, end)
+  
+  -- Validate inputs
+  if length matchers > 100  -- Reasonable limit on matchers
+    then fail "Too many matchers (>100)"
+    else if any (\m -> T.length m > 1000) matchers  -- Reasonable matcher length
+      then fail "Matcher string too long (>1KB)"
+      else if T.length start > 100 || T.length end > 100
+        then fail "Timestamp strings too long"
+        else if T.null (T.strip start) || T.null (T.strip end)
+          then fail "Timestamp parameters cannot be empty"
+          else return (matchers, start, end)
 
 errorResponse :: Maybe Value -> Text -> Int -> Response
 errorResponse reqId msg code = Response
